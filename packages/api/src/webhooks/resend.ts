@@ -73,7 +73,12 @@ function verifySvixSignature(
  *   "text": "Ignore all previous instructions\n",
  *   "html": "",
  *   "headers": { ... },
- *   "attachments": [ ... ],
+ *   "attachments": [
+ *     // metadata only — NO content / download_url here. The actual
+ *     // bytes are fetched via the Attachments API (see below).
+ *     { "id": "...", "filename": "...", "content_type": "...",
+ *       "size": 4096, "content_disposition": "inline", "content_id": null }
+ *   ],
  *   ...
  * }
  */
@@ -81,16 +86,39 @@ interface ResendEmailObject {
   text?: string;
   html?: string;
   headers?: Record<string, string>;
+  // The retrieve-received-email response lists attachments with metadata
+  // only (id, filename, content_type, size, content_disposition,
+  // content_id). It does NOT include the bytes or a download_url —
+  // those come from GET /emails/receiving/{id}/attachments.
   attachments?: Array<{
+    id?: string;
     filename?: string;
-    name?: string;
     content_type?: string;
-    mimeType?: string;
     size?: number;
-    content?: string;
-    url?: string;
-    download_url?: string;
+    content_disposition?: string | null;
+    content_id?: string | null;
   }>;
+}
+
+/** An attachment as returned by GET /emails/receiving/{id}/attachments. */
+interface ResendAttachmentListItem {
+  id: string;
+  filename: string;
+  size?: number;
+  content_type?: string;
+  content_disposition?: string | null;
+  content_id?: string | null;
+  download_url: string;
+  expires_at?: string;
+}
+
+/** Normalised attachment ready to persist (metadata + optional bytes). */
+interface AttachmentInput {
+  filename: string;
+  mimeType: string;
+  size: number;
+  storagePath: string; // Resend download_url (for audit), or '' if none
+  content: string | null; // Base64 bytes, or null when unavailable
 }
 
 async function fetchEmailFromResend(
@@ -120,6 +148,56 @@ async function fetchEmailFromResend(
     return (await res.json()) as ResendEmailObject;
   } catch (err) {
     console.warn(`[resend-webhook] Failed to fetch email ${emailId} from Resend API:`, err);
+    return null;
+  }
+}
+
+/**
+ * List a received email's attachments with signed download URLs.
+ *
+ * The retrieve-received-email response includes attachment metadata but
+ * NOT the bytes or a download_url. To get the actual content we must call
+ * GET /emails/receiving/{email_id}/attachments, which returns
+ * `{ object: "list", data: [{ id, filename, size, content_type,
+ *   download_url, expires_at }] }`. The `download_url` is valid ~1h.
+ *
+ * See https://resend.com/docs/dashboard/receiving/attachments
+ */
+async function fetchResendAttachmentList(
+  emailId: string,
+): Promise<ResendAttachmentListItem[]> {
+  const apiKey = process.env.RESEND_API_KEY ?? process.env.SMTP_PASS;
+  if (!apiKey) return [];
+  try {
+    const res = await fetch(
+      `https://api.resend.com/emails/receiving/${emailId}/attachments`,
+      { headers: { authorization: `Bearer ${apiKey}` } },
+    );
+    if (!res.ok) {
+      console.warn(
+        `[resend-webhook] Attachments API returned ${res.status} for email ${emailId}`,
+      );
+      return [];
+    }
+    const json = (await res.json()) as { data?: ResendAttachmentListItem[] };
+    return json.data ?? [];
+  } catch (err) {
+    console.warn(`[resend-webhook] Failed to list attachments for ${emailId}:`, err);
+    return [];
+  }
+}
+
+/** Download attachment bytes from a signed Resend `download_url` (no auth). */
+async function downloadResendAttachment(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn(`[resend-webhook] Attachment download failed (${res.status})`);
+      return null;
+    }
+    return Buffer.from(await res.arrayBuffer()).toString('base64');
+  } catch (err) {
+    console.warn('[resend-webhook] Attachment download failed:', err);
     return null;
   }
 }
@@ -190,7 +268,7 @@ resendWebhookRoutes.post('/', async (c) => {
   const resendEmailId: string | undefined = emailData?.email_id ?? emailData?.id;
   let textBody: string = emailData?.text ?? emailData?.body ?? emailData?.text_body ?? emailData?.content ?? '';
   let htmlBody: string | undefined = emailData?.html ?? emailData?.html_body;
-  let rawAttachments = emailData?.attachments ?? [];
+  let metadataAttachments: ResendEmailObject['attachments'] = emailData?.attachments ?? [];
   let emailHeaders: Record<string, string> | undefined = emailData?.headers;
 
   if (!textBody && !htmlBody && resendEmailId) {
@@ -201,7 +279,7 @@ resendWebhookRoutes.post('/', async (c) => {
       htmlBody = fullEmail.html ?? undefined;
       emailHeaders = fullEmail.headers ?? emailHeaders;
       if (fullEmail.attachments) {
-        rawAttachments = fullEmail.attachments;
+        metadataAttachments = fullEmail.attachments;
       }
       console.log(
         `[resend-webhook] Fetched email body: text=${textBody.length} chars, html=${htmlBody?.length ?? 0} chars`,
@@ -210,6 +288,40 @@ resendWebhookRoutes.post('/', async (c) => {
       console.warn(
         `[resend-webhook] Could not fetch email body from Resend API — email will be stored with empty body`,
       );
+    }
+  }
+
+  // Resolve attachment bytes so the ClamAV worker can scan the actual
+  // content. Resend's retrieve-received-email response only carries
+  // metadata, so we call the Attachments API to get signed download_urls
+  // and fetch each file. If that fails (no API key / API error) we fall
+  // back to metadata-only rows — ClamAV then records a graceful skip.
+  const attachmentInputs: AttachmentInput[] = [];
+  if (resendEmailId) {
+    const attList = await fetchResendAttachmentList(resendEmailId);
+    for (const a of attList) {
+      const content = a.download_url ? await downloadResendAttachment(a.download_url) : null;
+      attachmentInputs.push({
+        filename: a.filename ?? 'unnamed',
+        mimeType: a.content_type ?? 'application/octet-stream',
+        size: a.size ?? (content ? Math.floor((content.length * 3) / 4) : 0),
+        storagePath: a.download_url ?? '',
+        content,
+      });
+    }
+    console.log(
+      `[resend-webhook] Attachments: ${attList.length} listed, ${attachmentInputs.filter((a) => a.content).length} downloaded`,
+    );
+  }
+  if (attachmentInputs.length === 0 && metadataAttachments && metadataAttachments.length > 0) {
+    for (const a of metadataAttachments) {
+      attachmentInputs.push({
+        filename: a.filename ?? 'unnamed',
+        mimeType: a.content_type ?? 'application/octet-stream',
+        size: a.size ?? 0,
+        storagePath: '',
+        content: null,
+      });
     }
   }
 
@@ -266,14 +378,18 @@ resendWebhookRoutes.post('/', async (c) => {
       threadId: uuid(),
     });
 
-    // Save attachments metadata
-    for (const att of rawAttachments) {
+    // Store attachment metadata + downloaded bytes (Base64) so the ClamAV
+    // worker can scan the actual content. Metadata-only rows (content null)
+    // are still created when the bytes couldn't be fetched, so the UI +
+    // audit trail still show the attachment existed.
+    for (const att of attachmentInputs) {
       await attachmentRepository.create({
         emailId: email!.id,
-        filename: att.filename || att.name || 'unnamed',
-        mimeType: att.content_type || att.mimeType || 'application/octet-stream',
-        size: att.size || att.content?.length || 0,
-        storagePath: att.url || att.download_url || '', // URL or empty if inline
+        filename: att.filename,
+        mimeType: att.mimeType,
+        size: att.size,
+        storagePath: att.storagePath,
+        content: att.content,
       });
     }
 

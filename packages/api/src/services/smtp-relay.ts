@@ -7,6 +7,12 @@
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
+export interface ResendAttachment {
+  filename: string;
+  content: string; // Base64-encoded bytes
+  content_type?: string;
+}
+
 export interface SendOptions {
   from: string;
   to: string | string[];
@@ -14,6 +20,7 @@ export interface SendOptions {
   text?: string;
   html?: string;
   inReplyTo?: string;
+  attachments?: ResendAttachment[];
 }
 
 export async function deliverEmail(opts: SendOptions): Promise<{ delivered: boolean; messageId?: string; error?: string }> {
@@ -40,6 +47,10 @@ export async function deliverEmail(opts: SendOptions): Promise<{ delivered: bool
         text: opts.text,
         html: opts.html,
         reply_to: opts.from,
+        // Resend `attachments`: array of { filename, content (Base64),
+        // content_type? }. Max 40MB per email after Base64 encoding.
+        // See https://resend.com/docs/dashboard/emails/attachments
+        attachments: opts.attachments,
       }),
     });
 

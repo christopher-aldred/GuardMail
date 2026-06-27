@@ -603,6 +603,52 @@ export function isQuarantined(email: { status: EmailStatus }): boolean {
 	return email.status === "quarantine";
 }
 
+/**
+ * A scan result the MCP redaction logic treats as a *security* failure
+ * (i.e. the content itself is dangerous — a prompt-injection / jailbreak
+ * payload from LLM Guard, or malware from ClamAV). Spam-filter failures are
+ * deliberately excluded: spam is a nuisance verdict, not an injection
+ * payload, so spam emails are not redacted for MCP consumers.
+ */
+const MCP_REDACTING_SCANNERS: ReadonlySet<string> = new Set([
+	"llm-guard",
+	"clamav",
+]);
+
+/**
+ * True when any of an email's scan results represent a *security* failure
+ * (LLM Guard prompt-injection/jailbreak verdict, or a ClamAV malware
+ * verdict). Such emails carry content that must never enter an LLM
+ * agent's context window, regardless of the email's current mailbox status.
+ *
+ * This is the durable signal behind MCP content redaction: an email that
+ * was quarantined keeps its scan results forever, so even after a user
+ * manually moves it back to the inbox (overriding the quarantine), the
+ * redaction still applies and the flagged payload cannot reach an agent.
+ */
+export function hasSecurityScanFailure(
+	scanResults: { scanner: string; passed: boolean }[] | undefined | null,
+): boolean {
+	if (!scanResults || scanResults.length === 0) return false;
+	return scanResults.some(
+		(s) => MCP_REDACTING_SCANNERS.has(s.scanner) && s.passed === false,
+	);
+}
+
+/**
+ * True when an email's content must be redacted before exposure to an MCP
+ * consumer. This is the case when the email is currently quarantined OR when
+ * any of its LLM Guard / ClamAV scan results failed — the latter ensures a
+ * manually-released quarantined email (now in the inbox) is still redacted,
+ * because its flagged payload is unchanged.
+ */
+export function shouldRedactForMcp(
+	email: { status: EmailStatus },
+	scanResults: { scanner: string; passed: boolean }[] | undefined | null,
+): boolean {
+	return isQuarantined(email) || hasSecurityScanFailure(scanResults);
+}
+
 export const isEmailStatus = (v: unknown): v is EmailStatus =>
 	typeof v === "string" &&
 	[

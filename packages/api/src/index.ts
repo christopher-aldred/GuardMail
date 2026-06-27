@@ -13,6 +13,7 @@ import { authRoutes } from './auth/routes';
 import { emailRoutes } from './emails/routes';
 import { settingsRoutes } from './settings/routes';
 import { inboundRoutes } from './inbound/routes';
+import { attachmentRoutes } from './attachments/routes';
 import { resendWebhookRoutes } from './webhooks/resend';
 import { stripeWebhookRoutes } from './webhooks/stripe';
 import { adminRoutes } from './admin/routes';
@@ -59,6 +60,9 @@ app.get('/api/health', async (c) => {
 // --- Routes ------------------------------------------------------------------
 app.route('/api/auth', authRoutes);
 app.route('/api/inbound', inboundRoutes);
+// Attachment download: the GET download route is public (token-gated);
+// the POST download-url route applies its own auth middleware internally.
+app.route('/api/attachments', attachmentRoutes);
 app.route('/api/webhooks/resend', resendWebhookRoutes);
 app.route('/api/webhooks/stripe', stripeWebhookRoutes);
 

@@ -13,12 +13,23 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { v4 as uuid } from 'uuid';
 import type { ApiResponse } from '@guardmail/shared';
-import { emailRepository, userRepository } from '../db';
+import { emailRepository, userRepository, attachmentRepository } from '../db';
 import { emailQueue } from '../services/email-queue';
 import { isReservedCustomEmail } from '../services/reserved-addresses';
 import { getAdminForwardEmail, forwardToAdmin } from '../services/admin-forward';
 
 export const inboundRoutes = new Hono();
+
+const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_SIZE_MB ?? 25) * 1024 * 1024;
+// Base64 encoding expands bytes by ~4/3, so allow ~137% of the raw cap.
+const MAX_ATTACHMENT_B64 = Math.ceil(MAX_ATTACHMENT_BYTES * 1.37);
+
+const inboundAttachmentSchema = z.object({
+  filename: z.string().min(1).max(255),
+  mimeType: z.string().min(1).max(127).default('application/octet-stream'),
+  size: z.number().int().min(0).max(MAX_ATTACHMENT_BYTES),
+  content: z.string().max(MAX_ATTACHMENT_B64), // Base64-encoded bytes
+});
 
 const inboundSchema = z.object({
   from: z.string().email(),
@@ -27,6 +38,7 @@ const inboundSchema = z.object({
   body: z.string().max(500_000).default(''),
   bodyHtml: z.string().max(1_000_000).optional(),
   messageId: z.string().max(500).optional(),
+  attachments: z.array(inboundAttachmentSchema).max(50).default([]),
 });
 
 /** Simple internal-key guard. */
@@ -48,7 +60,7 @@ inboundRoutes.post('/', async (c) => {
   if (!parsed.success) {
     throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'Invalid input' });
   }
-  const { from, to, subject, body, bodyHtml, messageId } = parsed.data;
+  const { from, to, subject, body, bodyHtml, messageId, attachments } = parsed.data;
 
   const created: { emailId: string; recipient: string }[] = [];
   const rejected: string[] = [];
@@ -90,6 +102,19 @@ inboundRoutes.post('/', async (c) => {
       inReplyTo: messageId ?? undefined,
       threadId: uuid(),
     });
+
+    // Persist attachments (Base64 bytes from the SMTP server's
+    // mailparser output) so ClamAV can scan the actual content.
+    for (const att of attachments) {
+      await attachmentRepository.create({
+        emailId: email!.id,
+        filename: att.filename,
+        mimeType: att.mimeType,
+        size: att.size,
+        storagePath: '',
+        content: att.content,
+      });
+    }
     await emailQueue.enqueue({
       emailId: email!.id,
       userId: user.id,

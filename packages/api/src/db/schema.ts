@@ -162,7 +162,16 @@ export const attachments = pgTable(
     filename: varchar('filename', { length: 255 }).notNull(),
     mimeType: varchar('mime_type', { length: 127 }).notNull(),
     size: integer('size').notNull(),
-    storagePath: varchar('storage_path', { length: 512 }).notNull(),
+    // Object-storage key / local file path / Resend download URL.
+    // Widened to `text` so signed Resend download URLs (which can exceed
+    // 512 chars) fit. Nullable so inbound rows that only carry `content`
+    // (Base64 bytes) don't need a placeholder path.
+    storagePath: text('storage_path').notNull().default(''),
+    // Base64-encoded attachment bytes. Populated for SMTP inbound and
+    // outbound (where we own the bytes) and for Resend inbound (the
+    // webhook downloads the content via the Attachments API download_url).
+    // Kept out of API/MCP responses — see the route layer's strip logic.
+    content: text('content'),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
       .notNull(),

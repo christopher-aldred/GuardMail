@@ -95,6 +95,7 @@ graph TB
 | POST   | `/api/emails/send`       | Send email                  | JWT  |
 | GET    | `/api/emails/:id`        | Get email details           | JWT  |
 | DELETE | `/api/emails/:id`        | Delete email                | JWT  |
+| POST   | `/api/emails/:id/move-to-inbox` | Manually release a quarantined/spam email back to the inbox | JWT/API key |
 | GET    | `/api/settings/spam`     | Get spam filter settings    | JWT  |
 | PUT    | `/api/settings/spam`     | Update spam filter settings | JWT  |
 | GET    | `/api/settings/domain`   | Get custom-domain status     | JWT  |
@@ -120,6 +121,7 @@ graph TB
 | `list_spam`            | List spam-filtered emails                | `{ limit?: number, offset?: number }`                                                 |
 | `list_quarantine`      | List LLM Guard/ClamAV quarantined emails | `{ limit?: number, offset?: number }`                                                 |
 | `get_email`            | Get email details with full scan report  | `{ emailId: string }`                                                                 |
+| `move_to_inbox`        | Manually release a quarantined/spam email back to the inbox (scan results preserved; content stays redacted for MCP if LLM Guard/ClamAV failed) | `{ emailId: string }` |
 | `register_user`        | Register a new user                      | `{ username: string, email: string, password: string }`                               |
 | `update_spam_settings` | Update spam filter configuration         | `{ enabled: boolean, sensitivity: string, allowlist: string[], blocklist: string[] }` |
 | `update_security_settings` | Update outbound LLM Guard toggle     | `{ llmGuardOutboundEnabled: boolean }`                                                |
@@ -171,7 +173,7 @@ graph TB
 
 **Configuration:**
 
-- ClamAV runs in Docker container (`clamav/clamav:unstable`)
+- ClamAV runs in Docker container (`clamav/clamav:stable`)
 - Connected via TCP on port 3310
 - File size limits configurable via env vars
 - Timeout handling for large files
@@ -516,7 +518,7 @@ services:
     ports: ["8000:8000"]
 
   clamav:
-    image: clamav/clamav:unstable
+    image: clamav/clamav:stable
     ports: ["3310:3310"]
 
   postgres:

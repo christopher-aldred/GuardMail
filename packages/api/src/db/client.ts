@@ -159,6 +159,20 @@ export async function ensureSchema(): Promise<void> {
     ALTER TABLE "users"
     ADD COLUMN IF NOT EXISTS "llm_guard_outbound_enabled" boolean NOT NULL DEFAULT true
   `;
+  // --- Attachments: support storing attachment bytes + long Resend URLs ---
+  // Widen storage_path to text so signed Resend download_urls fit, and
+  // add a nullable content column holding Base64-encoded bytes (used by
+  // the ClamAV scan path for SMTP inbound and outbound attachments, and
+  // for Resend inbound where the webhook downloads the bytes up front).
+  await client`
+    ALTER TABLE "attachments" ALTER COLUMN "storage_path" TYPE text
+  `;
+  await client`
+    ALTER TABLE "attachments" ALTER COLUMN "storage_path" SET DEFAULT ''
+  `;
+  await client`
+    ALTER TABLE "attachments" ADD COLUMN IF NOT EXISTS "content" text
+  `;
   // Promote the operator account to admin when ADMIN_EMAIL is set.
   const adminEmail = process.env.ADMIN_EMAIL;
   if (adminEmail) {
@@ -170,5 +184,5 @@ export async function ensureSchema(): Promise<void> {
       console.log(`[db] Promoted ${adminEmail} to admin role`);
     }
   }
-  console.log('[db] Schema ensured (password_reset_tokens, password_changed_at, scanning status, email verification, tier, user_role, last_login_at, disabled, custom_domain, llm_guard_outbound_enabled)');
+  console.log('[db] Schema ensured (password_reset_tokens, password_changed_at, scanning status, email verification, tier, user_role, last_login_at, disabled, custom_domain, llm_guard_outbound_enabled, attachments.content/storage_path)');
 }

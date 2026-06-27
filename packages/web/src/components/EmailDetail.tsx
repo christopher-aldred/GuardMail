@@ -11,10 +11,12 @@ interface Props {
     body: string;
     bodyHtml?: string;
     createdAt: string;
+    status?: string;
     scanResults?: { id: string; scanner: string; passed: boolean; riskScore: number; details: string; scannedAt: string }[];
     attachments?: { id: string; filename: string; mimeType: string; size: number }[];
   };
   onDelete?: () => void;
+  onMoveToInbox?: () => void;
 }
 
 /**
@@ -32,7 +34,7 @@ function pickBody(email: Props['email']): { html: boolean; content: string } {
   return { html: false, content: '(empty message)' };
 }
 
-export function EmailDetail({ email, onDelete }: Props) {
+export function EmailDetail({ email, onDelete, onMoveToInbox }: Props) {
   const from = email.fromAddress ?? email.from ?? 'unknown';
   const to = email.toAddresses ?? email.to ?? [];
   return (
@@ -84,6 +86,15 @@ export function EmailDetail({ email, onDelete }: Props) {
             </section>
           );
         })()}
+
+        {(onMoveToInbox && (email.status === 'quarantine' || email.status === 'spam')) && (
+          <button
+            onClick={onMoveToInbox}
+            className="mt-4 mr-2 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 transition"
+          >
+            Move to Inbox
+          </button>
+        )}
 
         {onDelete && (
           <button

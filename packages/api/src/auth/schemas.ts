@@ -35,12 +35,24 @@ export const deleteAccountSchema = z.object({
   password: z.string().min(1).max(128),
 });
 
+// 25 MB raw cap per attachment; Base64 expands ~4/3, so allow ~34 MB B64.
+const MAX_ATTACHMENT_BYTES = Number(process.env.MAX_ATTACHMENT_SIZE_MB ?? 25) * 1024 * 1024;
+const MAX_ATTACHMENT_B64 = Math.ceil(MAX_ATTACHMENT_BYTES * 1.37);
+
+export const sendEmailAttachmentSchema = z.object({
+  filename: z.string().min(1).max(255),
+  mimeType: z.string().min(1).max(127).default('application/octet-stream'),
+  size: z.number().int().min(0).max(MAX_ATTACHMENT_BYTES),
+  content: z.string().max(MAX_ATTACHMENT_B64), // Base64-encoded bytes
+});
+
 export const sendEmailSchema = z.object({
   to: z.array(z.string().email()).min(1).max(50),
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(100_000),
   bodyHtml: z.string().max(500_000).optional(),
   inReplyTo: z.string().uuid().optional(),
+  attachments: z.array(sendEmailAttachmentSchema).max(50).default([]),
 });
 
 export const spamSettingsSchema = z.object({

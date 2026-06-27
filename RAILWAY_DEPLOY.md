@@ -63,7 +63,9 @@ Railway will expose the connection strings as **reference variables**, e.g.:
 
 ---
 
-## 4. Add the five application services
+## 4. Add the application services
+
+Guardmail uses **Resend** for both inbound (webhooks) and outbound (API) mail, so **no SMTP server service is deployed to Railway**. The `packages/smtp-server` package remains in the repo for local Docker Compose testing only; in production, Resend receives mail on your MX and POSTs to the `/api/webhooks/resend` endpoint.
 
 For each service below, in the dashboard:
 
@@ -77,10 +79,9 @@ Repeat for each row:
 | `mcp-server` | `packages/mcp-server` | `packages/mcp-server/Dockerfile` | `node dist/index.js` |
 | `web` | `packages/web` | `packages/web/Dockerfile` | (nginx serves built static files) |
 | `llm-guard` | `docker/llm-guard` | `docker/llm-guard/Dockerfile` | (uvicorn in image) |
-| `clamav` | (no repo) | — | Image: `clamav/clamav:unstable` |
-| `smtp-server` | `packages/smtp-server` | `packages/smtp-server/Dockerfile` | `node dist/index.js` (listens on port 25) |
+| `clamav` | (no repo) | — | Image: `clamav/clamav:stable` |
 
-> **ClamAV** is added via **New → Docker Image → Raw** and entering `clamav/clamav:unstable`.
+> **ClamAV** is added via **New → Docker Image → Raw** and entering `clamav/clamav:stable`.
 
 > **Tip:** `railway.json` (already in the repo) pre-defines these services and their variable mappings. If you deploy via `railway up`, Railway reads `railway.json` automatically — you can skip the manual service creation and go straight to step 5.
 
@@ -109,6 +110,13 @@ For each service, set the variables below (use Railway **reference variables** t
 | `MAX_ATTACHMENT_SIZE_MB` | `25` |
 | `RATE_LIMIT_WINDOW_MS` | `900000` |
 | `RATE_LIMIT_MAX_REQUESTS` | `100` |
+| `SMTP_PASS` | Resend API key (`re_...`) — used for outbound delivery + fetching inbound bodies |
+| `SMTP_FROM` | `Guardmail <noreply@mydomain.com>` — verified Resend sender address |
+| `RESEND_API_KEY` | Same Resend API key (optional; falls back to `SMTP_PASS`) |
+| `RESEND_WEBHOOK_SECRET` | Svix signing secret from Resend dashboard → Webhooks (verifies inbound payloads) |
+| `PUBLIC_API_URL` | `https://<api-public-domain>` — base URL for MCP signed attachment download URLs |
+| `ATTACHMENT_URL_SECRET` | (generate a strong random string) — signs short-lived download URLs (falls back to `JWT_SECRET`) |
+| `ATTACHMENT_URL_TTL_SECONDS` | `300` — lifetime of signed attachment download URLs |
 
 > Use the **internal** hostname (`<service>.railway.internal`) for service-to-service calls. The public domain is only for the browser-facing `web` service.
 
@@ -142,17 +150,6 @@ For each service, set the variables below (use Railway **reference variables** t
 
 No environment variables required. Ensure port `3310` is exposed internally (Railway does this automatically for image-based services).
 
-### 5.6 `smtp-server`
-
-| Variable | Value |
-|----------|-------|
-| `API_URL` | `http://api.railway.internal:3000` |
-| `INTERNAL_API_KEY` | (same strong random string as set on `api`) |
-| `SMTP_PORT` | `25` |
-| `SMTP_MAX_MESSAGE_MB` | `35` |
-
-> **Port 25 on Railway:** Railway's public TCP ports default to 80/4480. To receive raw SMTP on port 25 you must (a) generate a **public TCP domain** (not an HTTP domain) for the `smtp-server` service, and (b) point your domain's MX record at that TCP hostname. If Railway blocks port 25, run the SMTP listener on `587`/`2525` instead and set `SMTP_PORT` accordingly — only the MX record target matters for inbound.
-
 ---
 
 ## 6. Generate public domains
@@ -161,12 +158,20 @@ For each service that needs an externally reachable URL, go to the service → *
 
 | Service | Needs public domain? | Why |
 |---------|---------------------|-----|
-| `api` | ✅ | Web UI and external clients call it |
+| `api` | ✅ | Web UI, external clients, Resend webhook, and signed attachment download URLs |
 | `mcp-server` | ✅ | LLM agents connect over HTTP/SSE |
 | `web` | ✅ | Browser access |
-| `smtp-server` | ✅ (TCP) | Receives inbound mail — use a **public TCP domain**, not HTTP |
 | `llm-guard` | ❌ | Only called by `api` internally |
 | `clamav` | ❌ | Only called by `api` internally |
+
+> No `smtp-server` service is deployed — inbound mail arrives via the Resend webhook hitting the `api` public domain's `/api/webhooks/resend` endpoint.
+
+After generating, update the dependent variables:
+
+- `web` → `VITE_API_URL` = the `api` public domain (e.g. `https://guardmail-api-production.up.railway.app`)
+- `api` → `CORS_ORIGINS` = the `web` public domain
+- `api` → `PUBLIC_API_URL` = the `api` public domain (used to build signed attachment download URLs)
+- `mcp-server` → `API_URL` stays internal (`http://api.railway.internal:3000`)
 
 After generating, update the dependent variables:
 
@@ -214,24 +219,40 @@ The seed script creates a demo user:
 
 ---
 
-## 9. Configure DNS for your email domain
+## 9. Configure Resend for inbound + outbound email
 
-Guardmail now ships its own **inbound SMTP server** (`packages/smtp-server`), listening on port 25 (configurable via `SMTP_PORT`). To receive mail at `<username>@mydomain.com`:
+Guardmail uses **Resend** for both directions — no SMTP server runs in Railway.
 
-1. Generate a **public TCP domain** for the `smtp-server` service in Railway (Settings → Networking → Generate Domain; ensure it's the TCP/raw port, not an HTTP domain).
-2. Point your domain's MX record at that TCP hostname.
+### 9.1 Verify your domain with Resend
+
+In the Resend dashboard → **Domains → Add Domain** (`mydomain.com`) and publish the DNS records Resend gives you (SPF, DKIM, DMARC). Wait for Resend to report the domain as `verified`.
+
+### 9.2 Set up the inbound webhook
+
+1. In Resend → **Webhooks → Create Webhook**.
+2. Endpoint URL: `https://<api-public-domain>/api/webhooks/resend`.
+3. Subscribe to the `email.received` event.
+4. Copy the **Signing Secret** (starts `whsec_…`) into the `api` service's `RESEND_WEBHOOK_SECRET` variable.
+
+### 9.3 Point your MX record at Resend
+
+Resend gives you the MX target to publish once your domain is verified.
 
 Minimal DNS records for `mydomain.com`:
 
 | Type | Name | Value |
 |------|------|-------|
-| MX | `@` | `<smtp-server-public-tcp-host>` (priority 10) |
-| TXT (SPF) | `@` | `v=spf1 mx ~all` |
-| TXT (DKIM) | `default._domainkey` | (generate via OpenDKIM/opendkim — optional but recommended for deliverability) |
+| MX | `@` | Resend's inbound MX target (priority 10) |
+| TXT (SPF) | `@` | (as provided by Resend) |
+| TXT (DKIM) | `default._domainkey` | (as provided by Resend) |
 
-> **Flow:** external MTA → MX → `smtp-server` (port 25) → parses with `mailparser` → POST `api` `/api/inbound` (validated by `INTERNAL_API_KEY`) → resolves recipient via `findByCustomEmail` → creates `Email` row → enqueued in Redis → `email-processor` worker runs LLM Guard + ClamAV + spam filter → routes to inbox/spam/quarantine.
+> **Inbound flow:** external MTA → MX → Resend → POST `/api/webhooks/resend` (Svix signature verified with `RESEND_WEBHOOK_SECRET`) → `api` fetches the full body + attachments from the Resend API → resolves recipient via `findByCustomEmail` → creates `Email` row (status `scanning`) → enqueued in Redis → `email-processor` worker runs LLM Guard + ClamAV + spam filter → routes to inbox/spam/quarantine.
 >
-> **Outbound delivery is still local-only:** `POST /api/emails/send` stores the message and scans it, but does not transmit to external recipients over SMTP. To physically deliver outbound mail, wire a relay (Resend/SES/Postmark) via `nodemailer` — that is not part of this build.
+> **Outbound flow:** `POST /api/emails/send` stores + scans the message; the `email-processor` worker delivers clean emails via the Resend API (`SMTP_PASS` = Resend API key, `SMTP_FROM` = verified sender).
+
+### 9.4 (Optional) Local SMTP testing
+
+The `packages/smtp-server` package is kept for local Docker Compose ingress testing only. It POSTs parsed messages to `api`'s `/api/inbound` endpoint (validated by `INTERNAL_API_KEY`). It is **not** deployed to Railway in the Resend-only topology.
 
 ---
 
@@ -268,28 +289,30 @@ curl -X POST https://<mcp-public-domain>/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Test inbound SMTP end-to-end (against your deployed `smtp-server` TCP host):
+Test inbound email end-to-end (via Resend — send a real email to a registered custom address from any external mailbox):
 
 ```bash
-# Send a raw email via SMTP to a registered custom address
-(
-  printf 'EHLO test\r\n'; \
-  printf 'MAIL FROM:<sender@example.com>\r\n'; \
-  printf 'RCPT TO:<demo@mydomain.com>\r\n'; \
-  printf 'DATA\r\n'; \
-  printf 'Subject: Hello from SMTP\r\n'; \
-  printf '\r\n'; \
-  printf 'This is a test message.\r\n'; \
-  printf '.\r\n'; \
-  printf 'QUIT\r\n'
-) | nc <smtp-server-public-tcp-host> 25
+# From your personal mailbox, send a message to demo@mydomain.com.
+# Resend receives it, fires the webhook, and the email-processor routes it.
 
 # Then check the inbox via the API (or web UI)
 curl https://<api-public-domain>/api/emails/inbox \
   -H 'authorization: Bearer <token>'
 ```
 
-> If your local network blocks outbound port 25, set `SMTP_PORT=2525` on the `smtp-server` service and connect to that port instead.
+MCP attachment download (signed URL):
+
+```bash
+# 1. List tools and call get_attachment_url with an attachment id from an email.
+curl -X POST https://<mcp-public-domain>/mcp \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: <MCP_API_KEY>' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_attachment_url","arguments":{"attachmentId":"<uuid>"}}}'
+# → { ... "data": { "url": "https://<api-public-domain>/api/attachments/<uuid>/download?exp=...&sig=...", "expiresAt": "..." } }
+
+# 2. Fetch the bytes with a plain GET (no auth header needed):
+curl -OJL "<url from step 1>"
+```
 
 ---
 
@@ -307,7 +330,10 @@ curl https://<api-public-domain>/api/emails/inbox \
 - [ ] `CORS_ORIGINS` restricted to your actual frontend domain(s)
 - [ ] Demo user deleted or password changed
 - [ ] `EMAIL_DOMAIN` set to your real domain
-- [ ] SMTP ingress configured (so `*@mydomain.com` actually delivers)
+- [ ] Resend domain verified + MX record pointed at Resend (so `*@mydomain.com` delivers)
+- [ ] `RESEND_WEBHOOK_SECRET` set; Resend webhook → `/api/webhooks/resend` firing
+- [ ] `PUBLIC_API_URL` set to the `api` public domain (for signed attachment URLs)
+- [ ] `ATTACHMENT_URL_SECRET` set (or relying on the `JWT_SECRET` fallback)
 - [ ] ClamAV has enough memory (≥ 1 GB recommended for fresh signature DB load)
 - [ ] LLM Guard GPU not required (CPU-only scanners used) — confirm it starts within the health-check grace period (~40s)
 - [ ] Backups enabled on the PostgreSQL add-on

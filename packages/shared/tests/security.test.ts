@@ -1,4 +1,12 @@
-import { isEmailScanned, redactEmailBody, redactQuarantinedForMcp, isQuarantined, UNSCANNED_STATUSES } from '../src';
+import {
+  isEmailScanned,
+  redactEmailBody,
+  redactQuarantinedForMcp,
+  isQuarantined,
+  hasSecurityScanFailure,
+  shouldRedactForMcp,
+  UNSCANNED_STATUSES,
+} from '../src';
 
 describe('isEmailScanned', () => {
   it('returns false for holding/pending statuses', () => {
@@ -80,5 +88,71 @@ describe('redactQuarantinedForMcp', () => {
     const red = redactQuarantinedForMcp(injected);
     expect(red.subject).toMatch(/Quarantined/i);
     expect(red.body).toMatch(/withheld/i);
+  });
+});
+
+describe('hasSecurityScanFailure', () => {
+  it('returns false when there are no scan results', () => {
+    expect(hasSecurityScanFailure([])).toBe(false);
+    expect(hasSecurityScanFailure(undefined)).toBe(false);
+    expect(hasSecurityScanFailure(null)).toBe(false);
+  });
+
+  it('returns false when only the spam filter failed', () => {
+    expect(
+      hasSecurityScanFailure([
+        { scanner: 'llm-guard', passed: true },
+        { scanner: 'clamav', passed: true },
+        { scanner: 'spam-filter', passed: false },
+      ]),
+    ).toBe(false);
+  });
+
+  it('returns true when an LLM Guard scan failed', () => {
+    expect(
+      hasSecurityScanFailure([
+        { scanner: 'llm-guard', passed: false },
+        { scanner: 'spam-filter', passed: false },
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns true when a ClamAV scan failed', () => {
+    expect(
+      hasSecurityScanFailure([{ scanner: 'clamav', passed: false }]),
+    ).toBe(true);
+  });
+});
+
+describe('shouldRedactForMcp', () => {
+  it('redacts a currently-quarantined email even without scan results', () => {
+    expect(shouldRedactForMcp({ status: 'quarantine' }, [])).toBe(true);
+  });
+
+  it('redacts an inbox email that was flagged by LLM Guard (e.g. after a manual release)', () => {
+    expect(
+      shouldRedactForMcp(
+        { status: 'inbox' },
+        [{ scanner: 'llm-guard', passed: false }],
+      ),
+    ).toBe(true);
+  });
+
+  it('does not redact a clean inbox email', () => {
+    expect(
+      shouldRedactForMcp(
+        { status: 'inbox' },
+        [{ scanner: 'llm-guard', passed: true }, { scanner: 'clamav', passed: true }],
+      ),
+    ).toBe(false);
+  });
+
+  it('does not redact a spam email flagged only by the spam filter', () => {
+    expect(
+      shouldRedactForMcp(
+        { status: 'spam' },
+        [{ scanner: 'spam-filter', passed: false }],
+      ),
+    ).toBe(false);
   });
 });

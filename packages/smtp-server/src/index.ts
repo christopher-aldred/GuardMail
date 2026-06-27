@@ -25,6 +25,12 @@ async function deliverToApi(mail: {
   body: string;
   bodyHtml?: string;
   messageId?: string;
+  attachments: Array<{
+    filename: string;
+    mimeType: string;
+    size: number;
+    content: string; // Base64
+  }>;
 }): Promise<{ created: unknown[]; rejected: string[] }> {
   const res = await fetch(`${API_URL}/api/inbound`, {
     method: 'POST',
@@ -65,6 +71,16 @@ async function handleData(stream: SMTPServerDataStream, _session: SMTPServerSess
     return callback(new Error('553 5.1.3 Missing sender or recipient'));
   }
 
+  // Forward parsed attachments as Base64 so the API can hand them to
+  // ClamAV for scanning. mailparser exposes attachment content as a
+  // Buffer on `mail.attachments[].content`.
+  const attachments = (mail.attachments ?? []).map((a) => ({
+    filename: a.filename ?? 'unnamed',
+    mimeType: a.contentType ?? 'application/octet-stream',
+    size: a.size ?? (a.content ? a.content.length : 0),
+    content: (a.content ?? Buffer.alloc(0)).toString('base64'),
+  }));
+
   try {
     const result = await deliverToApi({
       from,
@@ -73,6 +89,7 @@ async function handleData(stream: SMTPServerDataStream, _session: SMTPServerSess
       body: mail.text ?? '',
       bodyHtml: mail.html ? (typeof mail.html === 'string' ? mail.html : undefined) : undefined,
       messageId: mail.messageId,
+      attachments,
     });
     console.log(`[smtp] delivered ${result.created.length} email(s), rejected ${result.rejected.length}`);
     // If every recipient was rejected, signal a permanent failure.

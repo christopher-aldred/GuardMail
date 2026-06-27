@@ -79,7 +79,7 @@ services:
     restart: unless-stopped
 
   clamav:
-    image: clamav/clamav:unstable
+    image: clamav/clamav:stable
     ports:
       - "3310:3310"
     volumes:

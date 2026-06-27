@@ -54,12 +54,15 @@ Exposes 8 tools (`send_email`, `list_inbox`, `list_spam`, `list_quarantine`,
 
 ## Test status
 
-| Package    | Suites | Tests |
-| ---------- | ------ | ----- |
-| shared     | 1      | 2     |
-| api        | 3      | 11    |
-| mcp-server | 1      | 4     |
-| web        | 1      | 1     |
+| Package     | Suites | Tests |
+| ----------- | ------ | ----- |
+| shared      | 3      | 29    |
+| api         | 9      | 56    |
+| mcp-server  | 3      | 36    |
+| web         | 1      | 1     |
+| smtp-server | 1      | 2     |
+
+**Total: 17 suites, 124 tests** (all passing, no Docker required).
 
 Integration tests (`packages/api/tests/integration/`) require live Docker
 services and are intentionally not run in CI by default.

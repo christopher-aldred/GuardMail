@@ -7,12 +7,14 @@ for prompt injection and other LLM vulnerabilities.
 
 import os
 import logging
+import dataclasses
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from llm_guard import scan_prompt
 from llm_guard.input_scanners import PromptInjection, Toxicity, Anonymize
+from llm_guard.input_scanners.toxicity import DEFAULT_MODEL as TOXICITY_DEFAULT_MODEL
 try:
     from llm_guard.input_scanners.jailbreak import JailbreakDetection
 except ImportError:
@@ -45,8 +47,17 @@ if JailbreakDetection:
             use_onnx=_use_onnx,
         )
     )
+# The Toxicity ONNX repo (ProtectAI/unbiased-toxic-roberta-onnx) ships both
+# model.onnx and model_quantized.onnx. optimum warns about the ambiguity and
+# defaults to model.onnx; explicitly select the quantized file for a smaller,
+# faster model with negligible accuracy loss. The other scanners' repos only
+# contain model.onnx, so they are left on the default.
+_toxicity_model = dataclasses.replace(
+    TOXICITY_DEFAULT_MODEL, onnx_filename="model_quantized.onnx"
+)
 _scanners.append(
     Toxicity(
+        model=_toxicity_model,
         threshold=float(os.getenv("LLM_GUARD_TOXICITY_THRESHOLD", "0.8")),
         use_onnx=_use_onnx,
     )

@@ -593,7 +593,8 @@ export const attachmentRepository = {
     filename: string;
     mimeType: string;
     size: number;
-    storagePath: string;
+    storagePath?: string;
+    content?: string | null;
   }) {
     const [row] = await db
       .insert(schema.attachments)
@@ -603,10 +604,20 @@ export const attachmentRepository = {
         filename: input.filename,
         mimeType: input.mimeType,
         size: input.size,
-        storagePath: input.storagePath,
+        storagePath: input.storagePath ?? '',
+        content: input.content ?? null,
       })
       .returning();
     return row;
+  },
+
+  async findById(id: string) {
+    const [row] = await db
+      .select()
+      .from(schema.attachments)
+      .where(eq(schema.attachments.id, id))
+      .limit(1);
+    return row ?? null;
   },
 
   async listByEmail(emailId: string) {

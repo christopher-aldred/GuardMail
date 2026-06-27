@@ -11,7 +11,7 @@
  * MCP consumer. The list helpers below drop/redact any email whose
  * security scan has not completed.
  */
-import { isEmailScanned, isQuarantined, redactQuarantinedForMcp, type EmailStatus } from '@guardmail/shared';
+import { isEmailScanned, shouldRedactForMcp, redactQuarantinedForMcp, type EmailStatus } from '@guardmail/shared';
 import type { ApiClient } from '../api-client';
 
 type EmailLike = {
@@ -39,7 +39,10 @@ function filterUnscannedList(emails: unknown): unknown {
 function redactQuarantinedList(emails: unknown): unknown {
   if (!Array.isArray(emails)) return emails;
   return (emails as EmailLike[]).map((e) =>
-    isQuarantined(e as { status: EmailStatus })
+    shouldRedactForMcp(
+      e as { status: EmailStatus },
+      (e as EmailLike).scanResults as { scanner: string; passed: boolean }[] | undefined,
+    )
       ? redactQuarantinedForMcp(e as { subject: string; body: string; bodyHtml?: string | null })
       : e,
   );

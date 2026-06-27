@@ -109,11 +109,39 @@ export class ApiClient {
   getEmail(id: string) {
     return this.request('GET', `/api/emails/${id}`);
   }
-  sendEmail(input: { to: string[]; subject: string; body: string; bodyHtml?: string }) {
+  sendEmail(input: {
+    to: string[];
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+    attachments?: Array<{
+      filename: string;
+      mimeType?: string; // optional — API applies application/octet-stream
+      size: number;
+      content: string; // Base64-encoded bytes
+    }>;
+  }) {
     return this.request('POST', '/api/emails/send', input);
   }
   deleteEmail(id: string) {
     return this.request('DELETE', `/api/emails/${id}`);
+  }
+
+  /** Manually move a quarantined or spam email back into the inbox. */
+  moveEmailToInbox(id: string) {
+    return this.request('POST', `/api/emails/${id}/move-to-inbox`);
+  }
+
+  /** Mint a short-lived signed download URL for an attachment the caller owns. */
+  getAttachmentDownloadUrl(id: string) {
+    return this.request<{
+      id: string;
+      filename: string;
+      mimeType: string;
+      size: number;
+      url: string;
+      expiresAt: string;
+    }>('POST', `/api/attachments/${id}/download-url`);
   }
 
   // Settings

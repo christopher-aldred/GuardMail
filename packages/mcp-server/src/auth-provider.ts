@@ -218,8 +218,12 @@ function renderAuthForm(
     label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; }
     input { width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px; color: #e2e8f0; font-size: 14px; font-family: monospace; }
     input:focus { outline: none; border-color: #3b82f6; }
-    button { width: 100%; margin-top: 16px; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 500; cursor: pointer; }
-    button:hover { background: #1d4ed8; }
+    button { width: 100%; margin-top: 16px; background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: background .15s ease; }
+    button:hover:not(:disabled) { background: #1d4ed8; }
+    button:disabled { opacity: .6; cursor: not-allowed; background: #1e40af; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.45); border-top-color: #fff; border-radius: 50%; animation: gm-spin .65s linear infinite; }
+    @keyframes gm-spin { to { transform: rotate(360deg); } }
+    input:disabled { opacity: .6; }
     .error { color: #f87171; font-size: 14px; margin-top: 12px; }
     .hint { color: #64748b; font-size: 12px; margin-top: 16px; }
     a { color: #3b82f6; }
@@ -230,7 +234,7 @@ function renderAuthForm(
     <h1>Authorize ${clientName}</h1>
     <p>Enter your AI Guard Mail API key to authorize this agent to access your mailbox.</p>
     ${errorMsg ? `<div class="error">${errorMsg}</div>` : ''}
-    <form method="POST" action="">
+    <form id="auth-form" method="POST" action="">
       <input type="hidden" name="response_type" value="code">
       <input type="hidden" name="client_id" value="${client.client_id ?? ''}">
       <input type="hidden" name="redirect_uri" value="${params.redirectUri ?? ''}">
@@ -241,10 +245,38 @@ function renderAuthForm(
       ${params.resource ? `<input type="hidden" name="resource" value="${params.resource.toString()}">` : ''}
       <label for="api_key">API Key</label>
       <input type="text" id="api_key" name="api_key" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required autofocus>
-      <button type="submit">Authorize</button>
+      <button type="submit" id="auth-btn">Authorize</button>
     </form>
     <p class="hint">Get your API key from <a href="https://aiguard.email/app/api" target="_blank">AI Guard Mail → API</a></p>
   </div>
+  <script>
+    (function () {
+      var form = document.getElementById('auth-form');
+      var btn = document.getElementById('auth-btn');
+      var keyInput = document.getElementById('api_key');
+      var label = btn.textContent;
+      var submitted = false;
+      form.addEventListener('submit', function (e) {
+        // Hard guard against any duplicate submission (double-click,
+        // Enter while already in-flight, browser autofill re-post).
+        if (submitted || btn.disabled) { e.preventDefault(); return; }
+        submitted = true;
+        btn.disabled = true;
+        keyInput.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Verifying…';
+      });
+      // Re-enable if the page is restored from bfcache (e.g. after a
+      // back-navigation) so the user is never stuck on a disabled button.
+      window.addEventListener('pageshow', function (ev) {
+        if (ev.persisted) {
+          submitted = false;
+          btn.disabled = false;
+          keyInput.disabled = false;
+          btn.textContent = label;
+        }
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }

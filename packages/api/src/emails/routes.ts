@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { v4 as uuid } from 'uuid';
 import type { ApiResponse, EmailStatus, Tier } from '@guardmail/shared';
-import { TIERS, isEmailScanned, isQuarantined, redactQuarantinedForMcp } from '@guardmail/shared';
+import { TIERS, isEmailScanned, shouldRedactForMcp, redactQuarantinedForMcp } from '@guardmail/shared';
 import type { AuthEnv } from '../middleware/auth';
 import {
   emailRepository,
@@ -22,6 +22,19 @@ import { emailQueue } from '../services/email-queue';
 import { isSmtpConfigured } from '../services/smtp-relay';
 
 export const emailRoutes = new Hono<AuthEnv>();
+
+/**
+ * Strip the Base64 `content` field from attachment rows before
+ * returning them to any client (web UI or MCP). The bytes are only
+ * needed server-side for ClamAV scanning and outbound re-attachment —
+ * exposing them over the API would leak potentially large / sensitive
+ * payloads and is never required by a client.
+ */
+function stripAttachmentContent<A extends { content?: string | null }>(
+  atts: A[],
+): Omit<A, 'content'>[] {
+  return atts.map(({ content: _content, ...rest }) => rest);
+}
 
 // ---------------------------------------------------------------------------
 // Send limits — driven by the user's subscription tier (see shared TIERS).
@@ -96,7 +109,9 @@ async function buildListResponse(
     // consumer so the payload cannot enter the agent's context window.
     // Metadata (sender, date, scan verdict, risk score) is preserved.
     data = data.map((r) =>
-      isQuarantined(r) ? redactQuarantinedForMcp(r) : r,
+      shouldRedactForMcp(r, r.scanResults as { scanner: string; passed: boolean }[])
+        ? redactQuarantinedForMcp(r)
+        : r,
     );
   }
   return data;
@@ -179,7 +194,9 @@ emailRoutes.get('/:id', async (c) => {
   if (email.userId !== auth.user.id) throw new HTTPException(403, { message: 'Forbidden' });
 
   const scans = await scanResultRepository.listByEmail(email.id);
-  const attachments = await attachmentRepository.listByEmail(email.id);
+  const rawAttachments = await attachmentRepository.listByEmail(email.id);
+  // Never expose attachment bytes over the API.
+  const attachments = stripAttachmentContent(rawAttachments);
 
   // MCP consumers must never receive unscanned email content.
   if (auth.isApiKey && !isEmailScanned(email, scans.length)) {
@@ -195,7 +212,9 @@ emailRoutes.get('/:id', async (c) => {
   // preserved so the user can still see *that* an email was quarantined
   // and why, without reading the injection itself.
   const payload =
-    auth.isApiKey && isQuarantined(email) ? redactQuarantinedForMcp(email) : email;
+    auth.isApiKey && shouldRedactForMcp(email, scans as { scanner: string; passed: boolean }[])
+      ? redactQuarantinedForMcp(email)
+      : email;
   const data = { ...payload, scanResults: scans, attachments };
   const body: ApiResponse<typeof data> = { success: true, data };
   return c.json(body);
@@ -213,6 +232,37 @@ emailRoutes.delete('/:id', async (c) => {
   return c.json(body);
 });
 
+// POST /api/emails/:id/move-to-inbox
+// Manually release a quarantined (or spam) email back into the inbox.
+//
+// Security note: this does NOT clear the scan results that originally
+// flagged the email, so an LLM Guard / ClamAV failure stays on the
+// record. The MCP layer's `shouldRedactForMcp` helper redacts content
+// for any email with a security-scanner failure regardless of its
+// current status, so a manually-released quarantined email is still
+// content-redacted for MCP consumers — only the web UI (JWT caller)
+// sees the original subject/body after the move.
+emailRoutes.post('/:id/move-to-inbox', async (c) => {
+  const auth = c.get('auth');
+  const email = await emailRepository.findById(c.req.param('id'));
+  if (!email) throw new HTTPException(404, { message: 'Email not found' });
+  if (email.userId !== auth.user.id) throw new HTTPException(403, { message: 'Forbidden' });
+
+  // Only allow releasing emails that were held back by security scans.
+  // An email already in the inbox, or in flight (pending/scanning), or
+  // already delivered (sent) cannot be "moved to inbox".
+  const releasable: EmailStatus[] = ['quarantine', 'spam'];
+  if (!releasable.includes(email.status)) {
+    throw new HTTPException(409, {
+      message: `Only quarantined or spam emails can be moved to the inbox (this email is ${email.status}).`,
+    });
+  }
+
+  const updated = await emailRepository.updateStatus(email.id, 'inbox');
+  const body: ApiResponse<typeof updated> = { success: true, data: updated };
+  return c.json(body);
+});
+
 // POST /api/emails/send
 emailRoutes.post('/send', async (c) => {
   const auth = c.get('auth');
@@ -220,7 +270,7 @@ emailRoutes.post('/send', async (c) => {
   if (!parsed.success) {
     throw new HTTPException(400, { message: parsed.error.issues[0]?.message ?? 'Invalid input' });
   }
-  const { to, subject, body, bodyHtml, inReplyTo } = parsed.data;
+  const { to, subject, body, bodyHtml, inReplyTo, attachments } = parsed.data;
 
   // --- Enforce sending limits (tier-based) -----------------------------
   const verified = !!auth.user.emailVerifiedAt;
@@ -269,6 +319,21 @@ emailRoutes.post('/send', async (c) => {
     inReplyTo,
     threadId: inReplyTo ?? uuid(),
   });
+
+  // Persist outbound attachments (Base64) so ClamAV can scan the
+  // content before delivery and Resend can re-attach the clean files.
+  if (attachments && attachments.length > 0) {
+    for (const att of attachments) {
+      await attachmentRepository.create({
+        emailId: email!.id,
+        filename: att.filename,
+        mimeType: att.mimeType,
+        size: att.size,
+        storagePath: '',
+        content: att.content,
+      });
+    }
+  }
 
   // Enqueue for background processing (LLM Guard scan + spam filter + delivery).
   await emailQueue.enqueue({

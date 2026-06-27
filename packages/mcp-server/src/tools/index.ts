@@ -13,7 +13,7 @@
  *   - snake_case `name` and a top-level `title` (Smithery "Naming").
  */
 import { z } from 'zod';
-import { isEmailScanned, isQuarantined, redactQuarantinedForMcp, type EmailStatus } from '@guardmail/shared';
+import { isEmailScanned, shouldRedactForMcp, redactQuarantinedForMcp, type EmailStatus } from '@guardmail/shared';
 import type { ApiClient } from '../api-client';
 import { isApiError } from '../api-client';
 
@@ -135,7 +135,10 @@ function filterUnscannedList(emails: unknown): unknown {
 function redactQuarantinedList(emails: unknown): unknown {
   if (!Array.isArray(emails)) return emails;
   return (emails as EmailLike[]).map((e) =>
-    isQuarantined(e as { status: EmailStatus })
+    shouldRedactForMcp(
+      e as { status: EmailStatus },
+      (e as EmailLike).scanResults as { scanner: string; passed: boolean }[] | undefined,
+    )
       ? redactQuarantinedForMcp(e as { subject: string; body: string; bodyHtml?: string | null })
       : e,
   );
@@ -158,11 +161,26 @@ const listSchema = z.object({
 
 const getEmailSchema = z.object({ emailId: z.string().uuid() });
 
+const emailIdSchema = z.object({ emailId: z.string().uuid() }).strict();
+
 const sendEmailSchema = z.object({
   to: z.array(z.string().email()).min(1).max(50),
   subject: z.string().min(1).max(500),
   body: z.string().min(1).max(100_000),
   bodyHtml: z.string().max(500_000).optional(),
+  attachments: z
+    .array(
+      z.object({
+        filename: z.string().min(1).max(255),
+        mimeType: z.string().min(1).max(127).default('application/octet-stream'),
+        size: z.number().int().min(0).max(25 * 1024 * 1024),
+        // Base64-encoded attachment bytes. Max ~34 MB after the 4/3
+        // expansion of a 25 MB raw cap.
+        content: z.string().max(34 * 1024 * 1024),
+      }),
+    )
+    .max(50)
+    .optional(),
 });
 
 const updateSpamSchema = z.object({
@@ -274,6 +292,20 @@ const emailItemSchema = {
       },
     },
     createdAt: { type: 'string', format: 'date-time', description: 'When the email was received.' },
+    attachments: {
+      type: 'array',
+      description:
+        'Attachment metadata (the bytes are never included — use the `get_attachment_url` tool to mint a short-lived download URL for a specific attachment).',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid', description: 'Attachment identifier — pass to `get_attachment_url`.' },
+          filename: { type: 'string', description: 'Original filename.' },
+          mimeType: { type: 'string', description: 'MIME type.' },
+          size: { type: 'integer', description: 'Size in bytes.' },
+        },
+      },
+    },
   },
 };
 
@@ -310,6 +342,28 @@ const sendEmailOutputSchema = envelope({
 });
 
 const getEmailOutputSchema = envelope(emailItemSchema);
+
+/**
+ * Output schema for `move_to_inbox`: the updated email row (now with
+ * `status: "inbox"`). For MCP consumers the content is still redacted by
+ * the list/get handlers when the email has a security-scanner failure,
+ * because the scan results are preserved.
+ */
+const moveToInboxOutputSchema = envelope({
+  type: 'object',
+  description:
+    'The released email, now in the inbox. Scan results are preserved; ' +
+    'if LLM Guard or ClamAV originally flagged the email, its content stays ' +
+    'redacted for MCP consumers even after the move.',
+  properties: {
+    ...emailItemSchema.properties,
+    status: {
+      type: 'string',
+      enum: ['inbox'],
+      description: 'Always "inbox" after a successful release.',
+    },
+  },
+});
 
 const listOutputSchema = envelope(emailArraySchema);
 
@@ -421,6 +475,43 @@ const subscriptionOutputSchema = envelope({
 // Input schema for the quota tool — takes no arguments.
 const getQuotaSchema = z.object({}).strict();
 
+// Input schema for the attachment download-URL tool.
+const getAttachmentUrlSchema = z.object({
+  attachmentId: z.string().uuid(),
+}).strict();
+
+/**
+ * Output schema for the `get_attachment_url` tool: a short-lived signed
+ * download URL plus attachment metadata. The URL is fetchable without
+ * auth headers until `expiresAt`; after that the agent must request a
+ * fresh one.
+ */
+const attachmentUrlOutputSchema = envelope({
+  type: 'object',
+  description:
+    'A short-lived signed URL that returns the attachment bytes, plus metadata.',
+  properties: {
+    id: { type: 'string', format: 'uuid', description: 'Attachment identifier.' },
+    filename: { type: 'string', description: 'Original filename.' },
+    mimeType: { type: 'string', description: 'MIME type of the attachment.' },
+    size: { type: 'integer', description: 'Size in bytes.' },
+    url: {
+      type: 'string',
+      format: 'uri',
+      description:
+        'Short-lived (default 5 min) signed download URL. Fetch it with a plain ' +
+        'GET (no auth headers needed) to receive the attachment bytes with ' +
+        'Content-Type and Content-Disposition set. Do not cache beyond ' +
+        '`expiresAt` — request a fresh URL after expiry.',
+    },
+    expiresAt: {
+      type: 'string',
+      format: 'date-time',
+      description: 'ISO timestamp after which the URL is no longer valid.',
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
@@ -465,7 +556,7 @@ export const tools: ToolDef[] = [
   {
     name: 'send_email',
     title: 'Send Email',
-    description: 'Send an email from the user\'s custom Guardmail address with automatic LLM Guard scanning.',
+    description: 'Send an email from the user\'s custom Guardmail address with automatic LLM Guard and ClamAV attachment scanning.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -490,6 +581,39 @@ export const tools: ToolDef[] = [
           type: 'string',
           maxLength: 500000,
           description: 'Optional HTML version of the body (max 500,000 characters).',
+        },
+        attachments: {
+          type: 'array',
+          maxItems: 50,
+          description:
+            'Optional attachments to send with the email (max 50). Each attachment must supply a filename, MIME type, size in bytes, and content as a Base64-encoded string of the raw bytes. Attachments are ClamAV-scanned before delivery; malware is quarantined and never sent.',
+          items: {
+            type: 'object',
+            properties: {
+              filename: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 255,
+                description: 'Attachment filename (1–255 characters).',
+              },
+              mimeType: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 127,
+                description: 'MIME type, e.g. "application/pdf", "image/png". Defaults to "application/octet-stream".',
+              },
+              size: {
+                type: 'integer',
+                minimum: 0,
+                description: 'Size of the decoded attachment in bytes.',
+              },
+              content: {
+                type: 'string',
+                description: 'Base64-encoded raw bytes of the attachment.',
+              },
+            },
+            required: ['filename', 'size', 'content'],
+          },
         },
       },
       required: ['to', 'subject', 'body'],
@@ -638,16 +762,50 @@ export const tools: ToolDef[] = [
           'Email is still being scanned and is not yet available. Please try again once scanning completes.',
         );
       }
-      // Defense-in-depth: redact quarantined content even though the API
-      // already does so for API-key callers. A quarantined email's
-      // subject/body carry the very injection payload LLM Guard flagged.
-      if (isQuarantined(email as { status: EmailStatus })) {
+      // Defense-in-depth: redact any email with a security-scanner failure
+      // (LLM Guard / ClamAV), even if a user has manually moved it out of
+      // quarantine into the inbox. The flagged prompt-injection / malware
+      // payload is unchanged by the move, so it must still never reach an
+      // LLM agent's context window.
+      if (
+        shouldRedactForMcp(
+          email as { status: EmailStatus },
+          (email as EmailLike).scanResults as { scanner: string; passed: boolean }[] | undefined,
+        )
+      ) {
         return redactQuarantinedForMcp(
           email as { subject: string; body: string; bodyHtml?: string | null },
         );
       }
       return email;
     }),
+  },
+  {
+    name: 'move_to_inbox',
+    title: 'Move Email to Inbox',
+    description:
+      'Manually move a quarantined or spam email back into the inbox. Use this when a user confirms an email was quarantined or flagged as spam in error and wants to retrieve it. ' +
+      'The original security scan results are preserved — if LLM Guard or ClamAV flagged the email, its content stays redacted for MCP consumers after the move, ' +
+      'but the user can read it in the web UI. Only emails currently in "quarantine" or "spam" can be moved; inbox/pending/scanning/sent emails cannot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        emailId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Identifier of the quarantined or spam email to release back to the inbox.',
+        },
+      },
+      required: ['emailId'],
+    },
+    outputSchema: moveToInboxOutputSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    handler: wrap(emailIdSchema, (c, i) => c.moveEmailToInbox(i.emailId)),
   },
   {
     name: 'update_spam_settings',
@@ -765,5 +923,34 @@ export const tools: ToolDef[] = [
       openWorldHint: false,
     },
     handler: wrap(getQuotaSchema, (c) => c.getSubscription()),
+  },
+  {
+    name: 'get_attachment_url',
+    title: 'Get Attachment Download URL',
+    description:
+      'Mint a short-lived signed download URL for an attachment on an email the caller owns. ' +
+      'Use this to fetch attachment bytes (e.g. to read a document or image the user sent/received). ' +
+      'The returned URL is fetchable with a plain GET — no auth header needed — and expires after a few minutes; ' +
+      'request a fresh URL if it has expired. Attachments flagged as malware by ClamAV are removed at scan time ' +
+      'and cannot be downloaded.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        attachmentId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Identifier of the attachment (from an email\u2019s `attachments` list).',
+        },
+      },
+      required: ['attachmentId'],
+    },
+    outputSchema: attachmentUrlOutputSchema,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    handler: wrap(getAttachmentUrlSchema, (c, i) => c.getAttachmentDownloadUrl(i.attachmentId)),
   },
 ];

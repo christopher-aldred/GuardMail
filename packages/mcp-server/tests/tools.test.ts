@@ -17,9 +17,11 @@ describe('MCP tools', () => {
         'update_spam_settings',
         'update_security_settings',
         'get_quota',
+        'get_attachment_url',
+        'move_to_inbox',
       ]),
     );
-    expect(names.length).toBe(9);
+    expect(names.length).toBe(11);
   });
 
   it('each tool has a JSON Schema input schema with descriptions', () => {
@@ -51,6 +53,36 @@ describe('MCP tools', () => {
     const get = tools.find((t) => t.name === 'get_email')!;
     const out = await get.handler({} as any, { emailId: 'not-a-uuid' });
     expect(JSON.parse(out).success).toBe(false);
+  });
+
+  describe('get_attachment_url', () => {
+    it('mints a short-lived signed download URL via the API', async () => {
+      const payload = {
+        id: '11111111-1111-1111-1111-111111111111',
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+        size: 1234,
+        url: 'https://api.example.com/api/attachments/.../download?exp=1&sig=abc',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+      };
+      const client = {
+        getAttachmentDownloadUrl: async () => payload,
+      } as unknown as ApiClient;
+      const tool = tools.find((t) => t.name === 'get_attachment_url')!;
+      const out = JSON.parse(
+        await tool.handler(client, { attachmentId: payload.id }),
+      );
+      expect(out.success).toBe(true);
+      expect(out.data).toEqual(payload);
+      expect(out.data.url).toMatch(/\/download\?exp=/);
+    });
+
+    it('rejects a non-UUID attachmentId', async () => {
+      const tool = tools.find((t) => t.name === 'get_attachment_url')!;
+      const out = JSON.parse(await tool.handler({} as any, { attachmentId: 'not-a-uuid' }));
+      expect(out.success).toBe(false);
+      expect(out.error.code).toBe('VALIDATION');
+    });
   });
 
   it('surfaces API errors as structured errors (code + status)', async () => {

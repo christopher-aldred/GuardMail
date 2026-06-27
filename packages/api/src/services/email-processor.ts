@@ -11,11 +11,75 @@ import type { EmailStatus, ScanResult, ScanVerdict, Tier } from '@guardmail/shar
 import { applyBrandingFooter } from '@guardmail/shared';
 import { emailRepository, scanResultRepository, attachmentRepository, spamFilterConfigRepository, userRepository } from '../db';
 import { llmGuardClient, toScanResult as llmToScanResult } from './llm-guard';
-import { clamavClient, toScanResult as clamToScanResult } from './clamav';
+import { clamavClient, toScanResult as clamToScanResult, type ClamavOutcome } from './clamav';
 import { evaluateSpam, withEmailId } from './spam-filter';
 import { emailQueue } from './email-queue';
 import { deliverEmail } from './smtp-relay';
 import { shouldForwardToAdmin, forwardToAdmin } from './admin-forward';
+
+/**
+ * Resolve an attachment to a Buffer ClamAV can scan.
+ *
+ * Attachment bytes reach us in one of three forms:
+ *   1. `content` — Base64-encoded bytes (SMTP inbound, outbound, and
+ *      Resend inbound where the webhook downloads the bytes up front via
+ *      the Attachments API `download_url`).
+ *   2. `storagePath` starting with `http(s)` — a Resend signed download
+ *      URL. Fetched on demand (valid ~1h after retrieval).
+ *   3. `storagePath` as a local file path — scanned on disk by `scanFile`.
+ *
+ * Returns `null` for cases 1/2 when the bytes can't be decoded/fetched so
+ * the caller can fall back to `scanFile` (which itself gracefully skips
+ * missing local files).
+ */
+async function resolveAttachmentBuffer(att: {
+  content?: string | null;
+  storagePath?: string | null;
+}): Promise<Buffer | null> {
+  if (att.content) {
+    try {
+      return Buffer.from(att.content, 'base64');
+    } catch (err) {
+      console.warn('[clamav] failed to decode base64 attachment content:', err);
+      return null;
+    }
+  }
+  const path = att.storagePath ?? '';
+  if (/^https?:\/\//i.test(path)) {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) {
+        console.warn(`[clamav] attachment download failed (${res.status}) for ${path.slice(0, 96)}`);
+        return null;
+      }
+      return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      console.warn('[clamav] attachment download failed:', err);
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Scan a single attachment with ClamAV, resolving its bytes from
+ * whichever source is available. Records a graceful "scan skipped"
+ * result (not a failure) when no bytes can be obtained, so a missing
+ * attachment never blocks delivery but is still audited.
+ */
+async function scanAttachment(att: {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  storagePath?: string | null;
+  content?: string | null;
+}): Promise<ClamavOutcome> {
+  const buf = await resolveAttachmentBuffer(att);
+  if (buf) return clamavClient.scanBuffer(buf, att.filename);
+  // Fall back to on-disk scanning (handles missing-file skip internally).
+  return clamavClient.scanFile(att.storagePath ?? '', att.size);
+}
 
 export interface ProcessingOptions {
   pollIntervalMs?: number;
@@ -96,19 +160,21 @@ export async function processEmail(emailId: string): Promise<ScanVerdict> {
   scanResults.push(llmToScanResult(email.id, llm));
   const llmPassed = llm.passed;
 
-  // --- 3. ClamAV scan of attachments (inbound only) --------------------------
+  // --- 3. ClamAV scan of attachments (inbound AND outbound) ----------------
+  // Every attachment is malware-scanned before delivery, regardless of
+  // direction. Bytes are resolved from Base64 `content` (SMTP inbound /
+  // outbound / Resend inbound) or fetched from a Resend `download_url`.
   let virusDetected = false;
-  if (!isOutbound) {
-    for (const att of attachments) {
-      // ClamAV scans files on disk. In this container-based setup,
-      // the storagePath may not exist on the API container's filesystem.
-      // We still record the scan attempt for audit purposes.
-      const outcome = await clamavClient.scanFile(att.storagePath, att.size);
-      scanResults.push(clamToScanResult(email.id, outcome));
-      if (!outcome.passed && outcome.virusName) {
-        virusDetected = true;
-        await attachmentRepository.delete(att.id);
-      }
+  const deletedAttachmentIds = new Set<string>();
+  for (const att of attachments) {
+    const outcome = await scanAttachment(att);
+    scanResults.push(clamToScanResult(email.id, outcome));
+    if (!outcome.passed && outcome.virusName) {
+      virusDetected = true;
+      // Remove the offending attachment so it can't be redelivered to the
+      // inbox or forwarded back out via Resend.
+      await attachmentRepository.delete(att.id);
+      deletedAttachmentIds.add(att.id);
     }
   }
 
@@ -148,6 +214,13 @@ export async function processEmail(emailId: string): Promise<ScanVerdict> {
       console.log(`[processor] Outbound email ${email.id} → quarantine (llm-threat)`);
       return 'llm-threat';
     }
+    if (virusDetected) {
+      // Never deliver an outbound message carrying malware — quarantine
+      // the whole email so the sender can review it.
+      await emailRepository.updateStatus(email.id, 'quarantine');
+      console.log(`[processor] Outbound email ${email.id} → quarantine (virus)`);
+      return 'virus';
+    }
 
     // Free-tier outbound emails carry the Guardmail branding footer.
     // Paid tiers remove it. The footer is appended AFTER scanning so it
@@ -160,12 +233,26 @@ export async function processEmail(emailId: string): Promise<ScanVerdict> {
       tier,
     );
 
+    // Forward the clean attachments to Resend. Resend accepts `content`
+    // as a Base64 string + `filename` (see Resend send-email docs: 40MB
+    // total per email after Base64 encoding). Attachments we deleted as
+    // malware are excluded.
+    const cleanAttachments = attachments.filter(
+      (a) => !deletedAttachmentIds.has(a.id) && !!a.content,
+    );
+    const resendAttachments = cleanAttachments.map((a) => ({
+      filename: a.filename,
+      content: a.content!,
+      content_type: a.mimeType,
+    }));
+
     const delivery = await deliverEmail({
       from: email.from,
       to: email.to,
       subject: email.subject,
       text,
       html: html ?? undefined,
+      attachments: resendAttachments.length > 0 ? resendAttachments : undefined,
     });
 
     if (delivery.delivered) {

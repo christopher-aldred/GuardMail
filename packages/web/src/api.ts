@@ -42,9 +42,16 @@ export const api = {
   listQuarantine: (limit = 50, offset = 0) => req<unknown[]>('GET', `/api/emails/quarantine?limit=${limit}&offset=${offset}`),
   listScanning: (limit = 50, offset = 0) => req<unknown[]>('GET', `/api/emails/scanning?limit=${limit}&offset=${offset}`),
   getEmail: (id: string) => req<unknown>('GET', `/api/emails/${id}`),
-  sendEmail: (i: { to: string[]; subject: string; body: string; bodyHtml?: string }) =>
+  sendEmail: (i: {
+    to: string[];
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+    attachments?: Array<{ filename: string; mimeType: string; size: number; content: string }>;
+  }) =>
     req<{ id: string; status: string }>('POST', '/api/emails/send', i),
   deleteEmail: (id: string) => req<null>('DELETE', `/api/emails/${id}`),
+  moveEmailToInbox: (id: string) => req<unknown>('POST', `/api/emails/${id}/move-to-inbox`),
   getSpamSettings: () => req<unknown>('GET', '/api/settings/spam'),
   updateSpamSettings: (i: unknown) => req<unknown>('PUT', '/api/settings/spam', i),
   getSecuritySettings: () => req<{ llmGuardOutboundEnabled: boolean }>('GET', '/api/settings/security'),

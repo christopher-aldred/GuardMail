@@ -22,7 +22,13 @@ export function EmailDetailPage() {
     navigate(-1);
   };
 
+  const moveToInbox = async () => {
+    if (!id) return;
+    await api.moveEmailToInbox(id);
+    navigate('/app/inbox');
+  };
+
   if (error) return <p className="text-red-400 p-4">{error}</p>;
   if (!email) return <p className="p-4 text-gray-500">Loading…</p>;
-  return <EmailDetail email={email} onDelete={del} />;
+  return <EmailDetail email={email} onDelete={del} onMoveToInbox={moveToInbox} />;
 }
