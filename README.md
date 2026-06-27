@@ -3,6 +3,8 @@
 Secure email service with LLM Guard protection, ClamAV attachment scanning,
 configurable spam filtering, an MCP server for LLM agents, and a React web UI.
 
+![Logo](relative%20logo_text-clear.png?raw=true "Logo")
+
 Built as a pnpm mono repo, deployable to Railway.
 
 [![smithery badge](https://smithery.ai/badge/afluffysquirrel/mail-guard)](https://smithery.ai/servers/afluffysquirrel/mail-guard)
