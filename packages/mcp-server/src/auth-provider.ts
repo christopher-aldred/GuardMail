@@ -223,7 +223,7 @@ function renderAuthForm(
     button:disabled { opacity: .6; cursor: not-allowed; background: #1e40af; }
     .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.45); border-top-color: #fff; border-radius: 50%; animation: gm-spin .65s linear infinite; }
     @keyframes gm-spin { to { transform: rotate(360deg); } }
-    input:disabled { opacity: .6; }
+    input:read-only { opacity: .6; cursor: not-allowed; }
     .error { color: #f87171; font-size: 14px; margin-top: 12px; }
     .hint { color: #64748b; font-size: 12px; margin-top: 16px; }
     a { color: #3b82f6; }
@@ -262,7 +262,10 @@ function renderAuthForm(
         if (submitted || btn.disabled) { e.preventDefault(); return; }
         submitted = true;
         btn.disabled = true;
-        keyInput.disabled = true;
+        // NOTE: use readOnly, NOT disabled — a disabled input's value is
+        // excluded from the form POST body, so the api_key would never
+        // reach the server and authorization would always fail.
+        keyInput.readOnly = true;
         btn.innerHTML = '<span class="spinner"></span> Verifying…';
       });
       // Re-enable if the page is restored from bfcache (e.g. after a
@@ -271,7 +274,7 @@ function renderAuthForm(
         if (ev.persisted) {
           submitted = false;
           btn.disabled = false;
-          keyInput.disabled = false;
+          keyInput.readOnly = false;
           btn.textContent = label;
         }
       });
