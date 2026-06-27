@@ -3,7 +3,7 @@
 Secure email service with LLM Guard protection, ClamAV attachment scanning,
 configurable spam filtering, an MCP server for LLM agents, and a React web UI.
 
-![Logo](relative%20logo_text-clear.png?raw=true "Logo")
+![Logo](https://raw.githubusercontent.com/christopher-aldred/GuardMail/refs/heads/main/logo_text-clear.png)
 
 Built as a pnpm mono repo, deployable to Railway.
 
