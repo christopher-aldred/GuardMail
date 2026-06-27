@@ -1,0 +1,1 @@
+ALTER TYPE "email_status" ADD VALUE 'pending';

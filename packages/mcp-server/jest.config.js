@@ -1,0 +1,8 @@
+/** @type {import('ts-jest').JestConfigWithTsJest} */
+export default {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  testMatch: ['**/tests/**/*.test.ts'],
+  moduleNameMapper: { '^@guardmail/shared$': '<rootDir>/../shared/src' },
+  collectCoverageFrom: ['src/**/*.ts'],
+};

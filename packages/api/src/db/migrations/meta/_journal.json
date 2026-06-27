@@ -1,0 +1,48 @@
+{
+  "version": "6",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1782221013311,
+      "tag": "0000_natural_reavers",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1782227686035,
+      "tag": "0001_high_gorgon",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1782300982895,
+      "tag": "0002_flawless_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1782385356711,
+      "tag": "0003_glamorous_warstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1782467322577,
+      "tag": "0004_chilly_skaar",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1782554825000,
+      "tag": "0005_smooth_apocalypse",
+      "breakpoints": true
+    }
+  ]
+}

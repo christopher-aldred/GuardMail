@@ -1,0 +1,117 @@
+services:
+  api:
+    build:
+      context: ../packages/api
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:guardmail_dev@postgres:5432/guardmail
+      - REDIS_URL=redis://redis:6379
+      - LLM_GUARD_URL=http://llm-guard:8000
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
+      - JWT_SECRET=dev-jwt-secret-change-in-production
+      - EMAIL_DOMAIN=mydomain.com
+      - NODE_ENV=development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      llm-guard:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    restart: unless-stopped
+
+  mcp-server:
+    build:
+      context: ../packages/mcp-server
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - API_URL=http://api:3000
+      - MCP_API_KEY=dev-mcp-api-key
+      - MCP_PORT=3001
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  smtp-server:
+    build:
+      context: ../packages/smtp-server
+      dockerfile: Dockerfile
+    ports:
+      - "25:25"
+    environment:
+      - API_URL=http://api:3000
+      - INTERNAL_API_KEY=dev-internal-key
+      - SMTP_PORT=25
+      - SMTP_MAX_MESSAGE_MB=35
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../packages/web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  llm-guard:
+    build:
+      context: ./llm-guard
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_GUARD_INJECTION_THRESHOLD=0.8
+      - LLM_GUARD_JAILBREAK_THRESHOLD=0.8
+      - LLM_GUARD_TOXICITY_THRESHOLD=0.8
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav:unstable
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav_db:/var/lib/clamav
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=guardmail
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=guardmail_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  clamav_db:

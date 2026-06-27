@@ -1,0 +1,10 @@
+fastapi==0.109.0
+uvicorn==0.27.0
+# 0.3.16 has a fully consistent ONNX stack: Model.onnx_filename defaults to
+# "model.onnx" (so the Toxicity scanner's ONNX repo with multiple files loads
+# correctly), optimum[onnxruntime]==1.25.2 is pinned, and transformers==4.51
+# pulls a huggingface-hub that has the huggingface_hub.errors module optimum
+# imports. 0.3.3's Toxicity ONNX path was broken (no file_name passed) and its
+# optimum extra resolved to an incompatible latest version.
+llm-guard[onnxruntime]==0.3.16
+pydantic==2.5.3

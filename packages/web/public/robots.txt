@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# AI Guard Mail sitemap
+Sitemap: https://aiguard.email/sitemap.xml

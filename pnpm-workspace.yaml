@@ -1,0 +1,15 @@
+packages:
+  - "packages/*"
+
+minimumReleaseAge: 0
+
+# Install optional native binaries for both darwin architectures so the
+# web (Vite/Rollup/esbuild) build works whether node runs as arm64 or x86_64.
+# (No `libc` key — darwin doesn't use the glibc/musl classification.)
+supportedArchitectures:
+  os:
+    - darwin
+    - linux
+  cpu:
+    - arm64
+    - x64
