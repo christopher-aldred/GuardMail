@@ -1,13 +1,11 @@
 # Guardmail
 
-Secure email service with LLM Guard protection, ClamAV attachment scanning,
-configurable spam filtering, an MCP server for LLM agents, and a React web UI.
+[![smithery badge](https://smithery.ai/badge/afluffysquirrel/mail-guard)](https://smithery.ai/servers/afluffysquirrel/mail-guard)
 
 ![Logo](https://github.com/christopher-aldred/GuardMail/blob/main/cropped_text_logo.png?raw=true)
 
-Built as a pnpm mono repo, deployable to Railway.
-
-[![smithery badge](https://smithery.ai/badge/afluffysquirrel/mail-guard)](https://smithery.ai/servers/afluffysquirrel/mail-guard)
+Secure email service with LLM Guard protection, ClamAV attachment scanning,
+configurable spam filtering, an MCP server for LLM agents, and a React web UI.
 
 ## Architecture
 
