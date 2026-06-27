@@ -5,17 +5,19 @@ configurable spam filtering, an MCP server for LLM agents, and a React web UI.
 
 Built as a pnpm mono repo, deployable to Railway.
 
+[![smithery badge](https://smithery.ai/badge/afluffysquirrel/mail-guard)](https://smithery.ai/servers/afluffysquirrel/mail-guard)
+
 ## Architecture
 
 See [`design.md`](./design.md) and [`requirements.md`](./requirements.md).
 
-| Package | Description |
-|---------|-------------|
-| `packages/shared` | Shared TypeScript types and helpers |
-| `packages/api` | Hono REST API server (auth, emails, settings, email processing pipeline) |
-| `packages/mcp-server` | MCP server (stdio + HTTP/SSE) for LLM agents |
-| `packages/web` | React + Vite + Tailwind SPA |
-| `docker/llm-guard` | Python FastAPI service wrapping `llm-guard` |
+| Package               | Description                                                              |
+| --------------------- | ------------------------------------------------------------------------ |
+| `packages/shared`     | Shared TypeScript types and helpers                                      |
+| `packages/api`        | Hono REST API server (auth, emails, settings, email processing pipeline) |
+| `packages/mcp-server` | MCP server (stdio + HTTP/SSE) for LLM agents                             |
+| `packages/web`        | React + Vite + Tailwind SPA                                              |
+| `docker/llm-guard`    | Python FastAPI service wrapping `llm-guard`                              |
 
 External services (via Docker Compose): PostgreSQL, Redis, ClamAV, LLM Guard.
 
@@ -52,12 +54,12 @@ Exposes 8 tools (`send_email`, `list_inbox`, `list_spam`, `list_quarantine`,
 
 ## Test status
 
-| Package | Suites | Tests |
-|---------|--------|-------|
-| shared   | 1 | 2 |
-| api      | 3 | 11 |
-| mcp-server | 1 | 4 |
-| web      | 1 | 1 |
+| Package    | Suites | Tests |
+| ---------- | ------ | ----- |
+| shared     | 1      | 2     |
+| api        | 3      | 11    |
+| mcp-server | 1      | 4     |
+| web        | 1      | 1     |
 
 Integration tests (`packages/api/tests/integration/`) require live Docker
 services and are intentionally not run in CI by default.
