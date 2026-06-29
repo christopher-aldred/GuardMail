@@ -52,6 +52,7 @@ header and doubles as the OAuth access token for the MCP server.
 | **Auth header** | `x-api-key: <your-api-key>` |
 | **Method** | `POST` |
 | **Content-Type** | `application/json` |
+| **Required request headers** | `Accept: application/json, text/event-stream` |
 
 The server is **stateless** — each `POST /mcp` carries a complete JSON-RPC 2.0
 request. SSE streaming is not required; simple request/response works.
@@ -85,6 +86,19 @@ request. SSE streaming is not required; simple request/response works.
   }
 }
 ```
+
+### Cline (VS Code) / `.mcp.json`
+
+```jsonc
+{
+  "mcpServers": {
+    "ai-guard-mail": {
+      "type": "http",
+      "url": "https://mcp.aiguard.email/mcp",
+      "headers": { "x-api-key": "YOUR_API_KEY" }
+    }
+  }
+}
 
 ### Cursor / other MCP clients
 
@@ -346,3 +360,14 @@ before delivery. Inbound scanning is always on regardless of this setting.
    scanning; quarantined content is redacted.
 
 That's it — no build, no Docker, no database. Just an API key.
+
+## 12. Example curl
+
+```bash
+# List inbox (curl example)
+curl -s -X POST https://mcp.aiguard.email/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'x-api-key: YOUR_API_KEY' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_inbox","arguments":{}}}'
+```
